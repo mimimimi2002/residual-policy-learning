@@ -73,7 +73,7 @@ def load_policy(policy_path, her_transits, freeze=False, full=False):
 
     return policy
 
-def train(policy, rollout_worker, evaluator,
+def train(ddpg_policy, rollout_worker, evaluator,
           n_epochs, n_test_rollouts, n_cycles, n_batches, policy_save_interval,
           save_policies, skip_training, freeze, full, **kwargs):
     rank = MPI.COMM_WORLD.Get_rank()
@@ -88,8 +88,8 @@ def train(policy, rollout_worker, evaluator,
     prev_losses = [0.0]
     losses = [0.0]
     actor_losses = [0.0]
-    original_pi_lr_r = policy.pi_lr_r
-    original_pi_lr_b = policy.pi_lr_b
+    original_pi_lr_r = ddpg_policy.pi_lr_r
+    original_pi_lr_b = ddpg_policy.pi_lr_b
 
     if freeze:
         base = False
@@ -118,8 +118,8 @@ def train(policy, rollout_worker, evaluator,
             policy_pi_lr_b = original_pi_lr_b
             coin_flipping = False
 
-        broadcast_coinflip_residual(MPI.COMM_WORLD, rank, policy, policy_pi_lr_r)
-        broadcast_coinflip_base(MPI.COMM_WORLD, rank, policy, policy_pi_lr_b)
+        broadcast_coinflip_residual(MPI.COMM_WORLD, rank, ddpg_policy, policy_pi_lr_r)
+        broadcast_coinflip_base(MPI.COMM_WORLD, rank, ddpg_policy, policy_pi_lr_b)
 
         prev_losses = losses
 
@@ -139,13 +139,13 @@ def train(policy, rollout_worker, evaluator,
                         rollout_worker.noise_eps = 0.0
                 episode = rollout_worker.generate_rollouts()
  
-                policy.store_episode(episode)
+                ddpg_policy.store_episode(episode)
                 for _ in range(n_batches):
-                    critic_loss, actor_loss = policy.train(base=base, residual=residual)
+                    critic_loss, actor_loss = ddpg_policy.train(base=base, residual=residual)
                     losses.append(actor_loss)
                     actor_losses.append(critic_loss)
 
-                policy.update_target_net()
+                ddpg_policy.update_target_net()
 
         # test
         evaluator.clear_history()
@@ -158,13 +158,14 @@ def train(policy, rollout_worker, evaluator,
             logger.record_tabular(key, mpi_average(val))
         for key, val in rollout_worker.logs('train'):
             logger.record_tabular(key, mpi_average(val))
-        for key, val in policy.logs():
+        for key, val in ddpg_policy.logs():
             logger.record_tabular(key, mpi_average(val))
 
         if rank == 0:
             logger.dump_tabular()
 
         # save the policy if it's better than the previous ones
+        # get success rate here
         success_rate = mpi_average(evaluator.current_success_rate())
         if rank == 0 and success_rate >= best_success_rate and save_policies:
             best_success_rate = success_rate
@@ -245,10 +246,10 @@ def launch(
     full=True
     #
     if policy_path is None:
-        policy = config.configure_ddpg(dims=dims, params=params, clip_return=clip_return)
+        ddpg_policy = config.configure_ddpg(dims=dims, params=params, clip_return=clip_return)
     if policy_path is not None:
         her_transits = config.get_her_transitions(dims=dims, params=params, clip_return=clip_return)
-        policy = load_policy(policy_path, her_transits, freeze=freeze, full=full)
+        ddpg_policy = load_policy(policy_path, her_transits, freeze=freeze, full=full)
 
     rollout_params = {
         'exploit': False,
@@ -270,10 +271,10 @@ def launch(
         rollout_params[name] = params[name]
         eval_params[name] = params[name]
 
-    rollout_worker = RolloutWorker(params['make_env'], policy, dims, logger, **rollout_params)
+    rollout_worker = RolloutWorker(params['make_env'], ddpg_policy, dims, logger, **rollout_params)
     rollout_worker.seed(rank_seed)
 
-    evaluator = RolloutWorker(params['make_env'], policy, dims, logger, **eval_params)
+    evaluator = RolloutWorker(params['make_env'], ddpg_policy, dims, logger, **eval_params)
     evaluator.seed(rank_seed)
 
     kwargs = {}
@@ -283,7 +284,7 @@ def launch(
         kwargs['scratch'] = False
 
     train(
-        logdir=logdir, policy=policy, rollout_worker=rollout_worker,
+        logdir=logdir, ddpg_policy=ddpg_policy, rollout_worker=rollout_worker,
         evaluator=evaluator, n_epochs=n_epochs, n_test_rollouts=params['n_test_rollouts'],
         n_cycles=params['n_cycles'], n_batches=params['n_batches'],
         policy_save_interval=policy_save_interval, save_policies=save_policies, skip_training=skip_training, 

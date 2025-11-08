@@ -10,7 +10,7 @@ import pdb
 class RolloutWorker:
 
     @store_args
-    def __init__(self, make_env, policy, dims, logger, T, rollout_batch_size=1,
+    def __init__(self, make_env, ddpg_policy, dims, logger, T, rollout_batch_size=1,
                  exploit=False, use_target_net=False, compute_Q=False, noise_eps=0,
                  random_eps=0, controller_prop=0,history_len=100, render=False, **kwargs):
         """Rollout worker generates experience by interacting with one or many environments.
@@ -18,7 +18,7 @@ class RolloutWorker:
         Args:
             make_env (function): a factory function that creates a new instance of the environment
                 when called
-            policy (object): the policy that is used to act
+            ddpg_policy (object): the policy that is used to act
             dims (dict of ints): the dimensions for observations (o), goals (g), and actions (u)
             logger (object): the logger that is used by the rollout worker
             rollout_batch_size (int): the number of parallel rollouts that should be used
@@ -78,7 +78,8 @@ class RolloutWorker:
         info_values = [np.empty((self.T, self.rollout_batch_size, self.dims['info_' + key]), np.float32) for key in self.info_keys]
         Qs = []
         for t in range(self.T):
-            policy_output = self.policy.get_actions(
+            # actorから得られたΔaction
+            residual_action = self.ddpg_policy.get_actions(
                 o, ag, self.g,
                 compute_Q=self.compute_Q,
                 noise_eps=self.noise_eps if not self.exploit else 0.,
@@ -87,14 +88,26 @@ class RolloutWorker:
                 use_target_net=self.use_target_net)
 
             if self.compute_Q:
-                u, Q = policy_output
+                delta_u, Q = residual_action
                 Qs.append(Q)
             else:
-                u = policy_output
+                delta_u = residual_action
 
-            if u.ndim == 1:
+            if delta_u.ndim == 1:
                 # The non-batched case should still have a reasonable shape.
-                u = u.reshape(1, -1)
+                delta_u = delta_u.reshape(1, -1)
+
+            base_u = []
+            # for i in range(self.rollout_batch_size):
+            #     with torch.no_grad():
+            #         obs_tensor = self._preprocess_for_openvla(o[i])  # 必要なら画像→テンソル変換
+            #         base_action = np.array([0.5, 0.5, 0.5, 0.5, 0.5, 0.5]) #self.openvla_policy.predict_action(obs_tensor)
+            #         base_u.append(base_action)
+
+            # --- 合成アクション ---
+            # final_u = base_u + delta_u
+            final_u = delta_u
+            final_u = np.clip(final_u, -self.ddpg_policy.max_u, self.ddpg_policy.max_u)
 
             o_new = np.empty((self.rollout_batch_size, self.dims['o']))
             ag_new = np.empty((self.rollout_batch_size, self.dims['g']))
@@ -105,7 +118,7 @@ class RolloutWorker:
                 try:
                     # We fully ignore the reward here because it will have to be re-computed
                     # for HER.
-                    curr_o_new, r, _, info = self.envs[i].step(u[i])
+                    curr_o_new, r, _, info = self.envs[i].step(final_u[i])
                     if 'is_success' in info:
                         success[i] = info['is_success']
                     reward[i] = r # Added by TS
@@ -127,7 +140,7 @@ class RolloutWorker:
             achieved_goals.append(ag.copy())
             successes.append(success.copy())
             rewards.append(reward.copy()) # added by TS
-            acts.append(u.copy())
+            acts.append(final_u.copy())
             goals.append(self.g.copy())
             o[...] = o_new
             ag[...] = ag_new
@@ -171,7 +184,7 @@ class RolloutWorker:
         """Pickles the current policy for later inspection.
         """
         with open(path, 'wb') as f:
-            pickle.dump(self.policy, f)
+            pickle.dump(self.ddpg_policy, f)
 
     def logs(self, prefix='worker'):
         """Generates a dictionary that contains all collected statistics.
