@@ -81,7 +81,7 @@ class RolloutWorker:
         Qs = []
         for t in range(self.T):
             # actorから得られたΔaction
-            residual_action = self.ddpg_policy.get_actions(
+            residual_action = self.ddpg_policy.get_delta_actions_and_Q(
                 o, ag, self.g,
                 compute_Q=self.compute_Q,
                 noise_eps=self.noise_eps if not self.exploit else 0.,

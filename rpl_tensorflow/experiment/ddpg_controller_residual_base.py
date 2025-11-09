@@ -127,20 +127,23 @@ class DDPG(object):
         g = np.clip(g, -self.clip_obs, self.clip_obs)
         return o, g
 
-    def get_actions(self, o, ag, g, noise_eps=0., random_eps=0., controller_prop=0.,use_target_net=False,
+    # actorで出力されるΔaction
+    def get_delta_actions_and_Q(self, o, ag, g, noise_eps=0., random_eps=0., controller_prop=0.,use_target_net=False,
                     compute_Q=False):
-        g_orig = g.copy()
-        o, g = self._preprocess_og(o, ag, g)
+        # g_orig = g.copy()
+        # o, g = self._preprocess_og(o, ag, g)
         policy = self.target if use_target_net else self.main
         # values to compute
         vals = [policy.pi_tf]
         #pdb.set_trace()
+        
+        # ret[1] = Q function
         if compute_Q:
             vals += [policy.Q_pi_tf]
         # feed
         feed = {
             policy.o_tf: o.reshape(-1, self.dimo),
-            policy.g_tf: g.reshape(-1, self.dimg),
+            policy.g_tf: np.zeros((o.shape[0], self.dimg), dtype=np.float32),
             policy.u_tf: np.zeros((o.size // self.dimo, self.dimu), dtype=np.float32)
         }
 
@@ -153,6 +156,8 @@ class DDPG(object):
         #pdb.set_trace()
         explore = np.random.binomial(1, random_eps, u.shape[0]).reshape(-1, 1)
         controller = np.random.binomial(1, controller_prop, u.shape[0]).reshape(-1,1)
+        
+        # DDPGのactionを元々base actionとして加えていた
         #u += explore*controller * (self._controller_action(o.reshape(-1, self.dimo), g_orig.reshape(-1, self.dimg))-u)
         u += explore*(1-controller) * (self._random_action(u.shape[0]) - u)  # eps-greedy
         if u.shape[0] == 1:
