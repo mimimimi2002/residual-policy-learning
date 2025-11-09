@@ -51,10 +51,12 @@ class RolloutWorker:
         """Resets the `i`-th rollout environment, re-samples a new goal, and updates the `initial_o`
         and `g` arrays accordingly.
         """
+        
+        # ここをopenvlaから取ってきたobsに変えたい
         obs = self.envs[i].reset()
         self.initial_o[i] = obs['observation']
-        self.initial_ag[i] = obs['achieved_goal']
-        self.g[i] = obs['desired_goal']
+        # self.initial_ag[i] = obs['achieved_goal']
+        # self.g[i] = obs['desired_goal']
 
     def reset_all_rollouts(self):
         """Resets all `rollout_batch_size` rollout workers.
