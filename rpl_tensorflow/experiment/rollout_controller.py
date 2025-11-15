@@ -6,6 +6,7 @@ from mujoco_py import MujocoException
 
 from baselines.her.util import convert_episode_to_batch_major, store_args
 import pdb
+import json
 
 class RolloutWorker:
 
@@ -46,17 +47,26 @@ class RolloutWorker:
         self.initial_ag = np.empty((self.rollout_batch_size, self.dims['g']), np.float32)  # achieved goals
         self.reset_all_rollouts()
         self.clear_history()
+        self.task_desired_goals = self.get_task_desired_goals_json()
+        print("self.task_desired_goals", self.task_desired_goals)
+        
+    def get_task_desired_goals_json(self):
+        with open("/home/miki/residual-policy-learning/data/spatial_task_desired_goals.json", "r") as f:
+            data = json.load(f)
+            return data
 
+    # 各エピソードで、環境変数を初期値に戻す
     def reset_rollout(self, i):
         """Resets the `i`-th rollout environment, re-samples a new goal, and updates the `initial_o`
         and `g` arrays accordingly.
         """
         
-        # ここをopenvlaから取ってきたobsに変えたい
+        # ここを環境の初期値
+        # desired_goalはここでしか撮らない
         obs = self.envs[i].reset()
         self.initial_o[i] = obs['observation']
-        # self.initial_ag[i] = obs['achieved_goal']
-        # self.g[i] = obs['desired_goal']
+        self.initial_ag[i] = obs['achieved_goal']
+        self.g[i] = obs['desired_goal']
 
     def reset_all_rollouts(self):
         """Resets all `rollout_batch_size` rollout workers.
@@ -68,6 +78,8 @@ class RolloutWorker:
         """Performs `rollout_batch_size` rollouts in parallel for time horizon `T` with the current
         policy acting on it accordingly.
         """
+        
+        # 環境の初期化で、initial_obs, initial_achived_goal, inital_desired_goalが初期化
         self.reset_all_rollouts()
         # compute observations
         o = np.empty((self.rollout_batch_size, self.dims['o']), np.float32)  # observations
@@ -76,9 +88,12 @@ class RolloutWorker:
         ag[:] = self.initial_ag
 
         # generate episodes
+        # 1エピソードの各タイムステップ
         obs, achieved_goals, acts, goals, successes, rewards = [], [], [], [], [], []
         info_values = [np.empty((self.T, self.rollout_batch_size, self.dims['info_' + key]), np.float32) for key in self.info_keys]
         Qs = []
+        
+        # タイムステップ
         for t in range(self.T):
             # actorから得られたΔaction
             residual_action = self.ddpg_policy.get_delta_actions_and_Q(
@@ -99,6 +114,9 @@ class RolloutWorker:
                 # The non-batched case should still have a reasonable shape.
                 delta_u = delta_u.reshape(1, -1)
 
+            # 実際に環境とinteractionして
+            # 既存のopenvlaでbaseのactionを生成
+            # obsを更新
             base_u = []
             # for i in range(self.rollout_batch_size):
             #     with torch.no_grad():
@@ -120,6 +138,7 @@ class RolloutWorker:
                 try:
                     # We fully ignore the reward here because it will have to be re-computed
                     # for HER.
+                    # obs, reward, done, info = env.step(action.tolist())
                     curr_o_new, r, _, info = self.envs[i].step(final_u[i])
                     if 'is_success' in info:
                         success[i] = info['is_success']
