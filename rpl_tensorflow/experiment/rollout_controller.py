@@ -8,10 +8,88 @@ from baselines.her.util import convert_episode_to_batch_major, store_args
 import pdb
 import json
 
+# for GenerateConfig
+from dataclasses import dataclass
+from typing import Optional, Union
+from pathlib import Path
+
+@dataclass
+class GenerateConfig:
+    # fmt: off
+
+    #################################################################################################################
+    # Model-specific parameters
+    #################################################################################################################
+    model_family: str = "openvla"                    # Model family
+    pretrained_checkpoint: Union[str, Path] = "openvla/openvla-7b"     # Pretrained checkpoint path
+    load_in_8bit: bool = False                       # (For OpenVLA only) Load with 8-bit quantization
+    load_in_4bit: bool = False                       # (For OpenVLA only) Load with 4-bit quantization
+
+    center_crop: bool = True                         # Center crop? (if trained w/ random crop image aug)
+
+    #################################################################################################################
+    # LIBERO environment-specific parameters
+    #################################################################################################################
+    task_suite_name: str = "libero_spatial"          # Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90
+    num_steps_wait: int = 10                         # Number of steps to wait for objects to stabilize in sim
+    num_trials_per_task: int = 50                    # Number of rollouts per task
+    libero_raw_data_dir: str = "/home/miki/LIBERO/libero_dataset/datasets/libero_spatial"
+
+    #################################################################################################################
+    # Utils
+    #################################################################################################################
+    run_id_note: Optional[str] = None                # Extra note to add in run ID for logging
+    local_log_dir: str = "./experiments/logs"        # Local directory for eval logs
+
+    use_wandb: bool = False                          # Whether to also log results in Weights & Biases
+    wandb_project: str = "YOUR_WANDB_PROJECT"        # Name of W&B project to log to (use default!)
+    wandb_entity: str = "YOUR_WANDB_ENTITY"          # Name of entity to log under
+
+    seed: int = 7                                    # Random Seed (for reproducibility)
+    
+    
+
+    # fmt: on
+
+import requests
+import json
+import numpy as np
+
+class EnvAPIClient:
+    def __init__(self, base_url):
+        self.base_url = base_url
+
+    def reset(self, env_id):
+        res = requests.post(f"{self.base_url}/reset", json={"env_id": env_id})
+        obs = pickle.loads(res.content)
+        return obs
+
+    def step(self, env_id, action):
+        res = requests.post(f"{self.base_url}/step", json={
+            "env_id": env_id,
+            "action": action.tolist()
+        })
+        return res.json()
+
+    def set_init_state(self, env_id, init_state):
+        res = requests.post(f"{self.base_url}/set_init_state", json={
+            "env_id": env_id,
+            "init_state": init_state
+        })
+        return res.json()
+
+    def get_base_action(self, obs, task_description):
+        res = requests.post(f"{self.base_url}/get_base_action", json={
+            "obs": obs,
+            "task_description": task_description
+        })
+        return np.array(res.json()["action"])
+
+
 class RolloutWorker:
 
     @store_args
-    def __init__(self, make_env, ddpg_policy, dims, logger, T, rollout_batch_size=1,
+    def __init__(self, make_env, ddpg_policy, dims, logger, cfg: GenerateConfig, T, rollout_batch_size=1,
                  exploit=False, use_target_net=False, compute_Q=False, noise_eps=0,
                  random_eps=0, controller_prop=0,history_len=100, render=False, **kwargs):
         """Rollout worker generates experience by interacting with one or many environments.
@@ -32,6 +110,7 @@ class RolloutWorker:
             history_len (int): length of history for statistics smoothing
             render (boolean): whether or not to render the rollouts
         """
+        self.api = EnvAPIClient("http://localhost:8000")
         self.envs = [make_env() for _ in range(rollout_batch_size)]
         assert self.T > 0
 
@@ -48,14 +127,14 @@ class RolloutWorker:
         self.reset_all_rollouts()
         self.clear_history()
         self.task_desired_goals = self.get_task_desired_goals_json()
-        print("self.task_desired_goals", self.task_desired_goals)
+        print(self.api.reset(env_id=0))
         
     def get_task_desired_goals_json(self):
         with open("/home/miki/residual-policy-learning/data/spatial_task_desired_goals.json", "r") as f:
             data = json.load(f)
             return data
 
-    # 各エピソードで、環境変数を初期値に戻す
+    # i番目の、環境変数を初期値に戻す
     def reset_rollout(self, i):
         """Resets the `i`-th rollout environment, re-samples a new goal, and updates the `initial_o`
         and `g` arrays accordingly.
@@ -77,9 +156,11 @@ class RolloutWorker:
     def generate_rollouts(self):
         """Performs `rollout_batch_size` rollouts in parallel for time horizon `T` with the current
         policy acting on it accordingly.
+        rollout_batch_size分のエピソードを作成
         """
         
         # 環境の初期化で、initial_obs, initial_achived_goal, inital_desired_goalが初期化
+        # 通信必要
         self.reset_all_rollouts()
         # compute observations
         o = np.empty((self.rollout_batch_size, self.dims['o']), np.float32)  # observations
@@ -117,6 +198,7 @@ class RolloutWorker:
             # 実際に環境とinteractionして
             # 既存のopenvlaでbaseのactionを生成
             # obsを更新
+            # 通信必要
             base_u = []
             # for i in range(self.rollout_batch_size):
             #     with torch.no_grad():
@@ -139,6 +221,7 @@ class RolloutWorker:
                     # We fully ignore the reward here because it will have to be re-computed
                     # for HER.
                     # obs, reward, done, info = env.step(action.tolist())
+                    #　通信必要
                     curr_o_new, r, _, info = self.envs[i].step(final_u[i])
                     if 'is_success' in info:
                         success[i] = info['is_success']
