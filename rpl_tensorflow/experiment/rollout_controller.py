@@ -59,10 +59,14 @@ class EnvAPIClient:
     def __init__(self, base_url):
         self.base_url = base_url
 
-    def reset(self, env_id):
-        res = requests.post(f"{self.base_url}/reset", json={"env_id": env_id})
-        obs = pickle.loads(res.content)
-        return obs
+    def reset(self, task_id, episode_id):
+        res = requests.post(f"{self.base_url}/reset", json={"task_id": task_id, "episode_id": episode_id})
+        res_dict = pickle.loads(res.content)
+
+        initial_obs = res_dict["initial_obs"]
+        desired_goal = res_dict["desired_goal"]
+        initial_achieved_goal = res_dict["initial_achieved_goal"]
+        return initial_obs, desired_goal, initial_achieved_goal
 
     def step(self, env_id, action):
         res = requests.post(f"{self.base_url}/step", json={
@@ -167,13 +171,13 @@ class RolloutWorker:
         # 通信必要
         self.reset_all_rollouts()
         
-        # obs
-        obs = self.api.reset(env_id=0)
+        # obs, task_id = 0, episode_id = 0
+        initial_obs, desired_goal, initial_achieved_goal = self.api.reset(task_id=0, episode_id=0)
+        print("initial_obs", "desired_goal", "initial_achieved_goal")
+        print(initial_obs, desired_goal, initial_achieved_goal)
         
         # get base action
-        base_action = self.api.get_base_action(0, 0, obs)
-        print("base_action")
-        print(base_action)
+        base_action = self.api.get_base_action(0, 0, initial_obs)
 
         # compute observations
         o = np.empty((self.rollout_batch_size, self.dims['o']), np.float32)  # observations
