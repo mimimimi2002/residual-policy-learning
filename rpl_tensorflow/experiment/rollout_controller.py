@@ -78,12 +78,17 @@ class EnvAPIClient:
         })
         return res.json()
 
-    def get_base_action(self, obs, task_description):
-        res = requests.post(f"{self.base_url}/get_base_action", json={
-            "obs": obs,
-            "task_description": task_description
-        })
-        return np.array(res.json()["action"])
+    def get_base_action(self, task_id, episode_id, obs):
+        payload_dict = {
+            "task_id": task_id,
+            "episode_id": episode_id,
+            "obs": obs,  # OrderedDictそのまま
+        }
+        payload_bytes = pickle.dumps(payload_dict)
+        res = requests.post(f"{self.base_url}/get_base_action", data=payload_bytes)
+        action_dict = pickle.loads(res.content)
+        action = np.array(action_dict["action"])
+        return action
 
 
 class RolloutWorker:
@@ -127,7 +132,6 @@ class RolloutWorker:
         self.reset_all_rollouts()
         self.clear_history()
         self.task_desired_goals = self.get_task_desired_goals_json()
-        print(self.api.reset(env_id=0))
         
     def get_task_desired_goals_json(self):
         with open("/home/miki/residual-policy-learning/data/spatial_task_desired_goals.json", "r") as f:
@@ -162,6 +166,15 @@ class RolloutWorker:
         # 環境の初期化で、initial_obs, initial_achived_goal, inital_desired_goalが初期化
         # 通信必要
         self.reset_all_rollouts()
+        
+        # obs
+        obs = self.api.reset(env_id=0)
+        
+        # get base action
+        base_action = self.api.get_base_action(0, 0, obs)
+        print("base_action")
+        print(base_action)
+
         # compute observations
         o = np.empty((self.rollout_batch_size, self.dims['o']), np.float32)  # observations
         ag = np.empty((self.rollout_batch_size, self.dims['g']), np.float32)  # achieved goals
