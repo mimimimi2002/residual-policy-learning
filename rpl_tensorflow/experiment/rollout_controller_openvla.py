@@ -326,12 +326,6 @@ class RolloutWorker_OpenVLA:
             return [(prefix + '/' + key, val) for key, val in logs]
         else:
             return logs
-
-    def seed(self, seed):
-        """Seeds each environment with a distinct seed derived from the passed in global seed.
-        """
-        for idx, env in enumerate(self.envs):
-            env.seed(seed + 1000 * idx)
     
     def get_ddpg_obs(self, obs, target_object):
         obs_list = []
