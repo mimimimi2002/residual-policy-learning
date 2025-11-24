@@ -12,6 +12,7 @@ from baselines import logger
 from baselines.common import set_global_seeds
 from baselines.common.mpi_moments import mpi_moments
 import rpl_tensorflow.experiment.configs.config_residual_base as config
+import rpl_tensorflow.experiment.configs.config_openvla as config_openvla
 import pickle as pkl
 import tensorflow as tf
 import pdb
@@ -25,6 +26,7 @@ import tensorflow as tf
 from baselines.her.util import (
     import_function, store_args, flatten_grads, transitions_in_episode_batch)
 from baselines.common.mpi_adam import MpiAdam
+import copy
 
 
 def mpi_average(value):
@@ -236,8 +238,6 @@ def launch(
     with open(os.path.join(logger.get_dir(), 'params.json'), 'w') as f:
         json.dump(params, f)
     params = config.prepare_params(params)
-    print("params")
-    print(params)
     config.log_params(params, logger=logger)
 
     if num_cpu == 1:
@@ -300,6 +300,113 @@ def launch(
         n_cycles=params['n_cycles'], n_batches=params['n_batches'],
         policy_save_interval=policy_save_interval, save_policies=save_policies, skip_training=skip_training, 
         freeze=freeze, full=full, **kwargs)
+    
+def launch_openvla(
+    env, logdir, n_epochs, num_cpu, seed, replay_strategy, policy_save_interval, clip_return, skip_training,
+    override_params={}, save_policies=True, policy_path=None
+):  
+    cfg = GenerateConfig()
+    
+    # Fork for multi-CPU MPI implementation.
+    if num_cpu > 1:
+        try:
+            whoami = mpi_fork(num_cpu, ['--bind-to', 'core'])
+        except CalledProcessError:
+            # fancy version of mpi call failed, try simple version
+            whoami = mpi_fork(num_cpu)
+
+        if whoami == 'parent':
+            sys.exit(0)
+        import baselines.common.tf_util as U
+        U.single_threaded_session().__enter__()
+    rank = MPI.COMM_WORLD.Get_rank()
+
+    # Configure logging
+    if rank == 0:
+        if logdir or logger.get_dir() is None:
+            logger.configure(dir=logdir)
+    else:
+        logger.configure()
+    logdir = logger.get_dir()
+    assert logdir is not None
+    os.makedirs(logdir, exist_ok=True)
+
+    # Seed everything.
+    rank_seed = seed + 1000000 * rank
+    set_global_seeds(rank_seed)
+
+    # Prepare params.
+    params = config_openvla.DEFAULT_PARAMS
+    params['env_name'] = env
+    params['replay_strategy'] = replay_strategy
+    if env in config_openvla.DEFAULT_ENV_PARAMS:
+        params.update(config_openvla.DEFAULT_ENV_PARAMS[env])  # merge env-specific parameters in
+    params.update(**override_params)  # makes it possible to override any parameter
+    with open(os.path.join(logger.get_dir(), 'params.json'), 'w') as f:
+        json.dump(params, f)
+    params = config_openvla.prepare_params(params)
+    config_openvla.log_params(params, logger=logger)
+
+    if num_cpu == 1:
+        logger.warn()
+        logger.warn('*** Warning ***')
+        logger.warn(
+            'You are running HER with just a single MPI worker. This will work, but the ' +
+            'experiments that we report in Plappert et al. (2018, https://arxiv.org/abs/1802.09464) ' +
+            'were obtained with --num_cpu 19. This makes a significant difference and if you ' +
+            'are looking to reproduce those results, be aware of this. Please also refer to ' +
+            'https://github.com/openai/baselines/issues/314 for further details.')
+        logger.warn('****************')
+        logger.warn()
+
+    dims = config_openvla.configure_dims(params)
+    freeze=False
+    full=True
+    #
+    if policy_path is None:
+        ddpg_policy = config_openvla.configure_ddpg(dims=dims, params=params, clip_return=clip_return)
+    if policy_path is not None:
+        her_transits = config_openvla.get_her_transitions(dims=dims, params=params, clip_return=clip_return)
+        ddpg_policy = load_policy(policy_path, her_transits, freeze=freeze, full=full)
+
+    rollout_params = {
+        'exploit': False,
+        'use_target_net': False,
+        'use_demo_states': True,
+        'compute_Q': False,
+        'T': params['T'],
+    }
+
+    eval_params = {
+        'exploit': True,
+        'use_target_net': params['test_with_polyak'],
+        'use_demo_states': False,
+        'compute_Q': True,
+        'T': params['T'],
+    }
+
+    for name in ['T', 'rollout_batch_size', 'gamma', 'controller_prop','noise_eps', 'random_eps']:
+        rollout_params[name] = params[name]
+        eval_params[name] = params[name]
+
+    # rollout_worker = RolloutWorker(params['make_env'], ddpg_policy, dims, logger, cfg, **rollout_params)
+    # rollout_worker.seed(rank_seed)
+
+    # evaluator = RolloutWorker(params['make_env'], ddpg_policy, dims, logger, cfg, **eval_params)
+    # evaluator.seed(rank_seed)
+
+    # kwargs = {}
+    # if 'Residual' not in env:
+    #     kwargs['scratch'] = True
+    # else:
+    #     kwargs['scratch'] = False
+
+    # train(
+    #     logdir=logdir, ddpg_policy=ddpg_policy, rollout_worker=rollout_worker,
+    #     evaluator=evaluator, n_epochs=n_epochs, n_test_rollouts=params['n_test_rollouts'],
+    #     n_cycles=params['n_cycles'], n_batches=params['n_batches'],
+    #     policy_save_interval=policy_save_interval, save_policies=save_policies, skip_training=skip_training, 
+    #     freeze=freeze, full=full, **kwargs)
 
 
 @click.command()
@@ -314,7 +421,7 @@ def launch(
 @click.option('--skip_training', is_flag=True, help='whether or not training should be skipped')
 @click.option('--policy_path', type=str, default=None, help='path to saved policy')
 def main(**kwargs):
-    launch(**kwargs)
+    launch_openvla(**kwargs)
 
 
 if __name__ == '__main__':
