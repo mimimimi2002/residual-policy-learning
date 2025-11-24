@@ -67,7 +67,7 @@ class EnvAPIClient:
         desired_goal = res_dict["desired_goal"]
         initial_achieved_goal = res_dict["initial_achieved_goal"]
         return initial_obs, desired_goal, initial_achieved_goal
-
+    
     def step(self, env_id, action):
         res = requests.post(f"{self.base_url}/step", json={
             "env_id": env_id,
@@ -95,6 +95,7 @@ class EnvAPIClient:
         return action
 
 
+#あるtask_idであるepisode_idの時
 class RolloutWorker:
 
     @store_args
@@ -133,6 +134,9 @@ class RolloutWorker:
         self.g = np.empty((self.rollout_batch_size, self.dims['g']), np.float32)  # goals
         self.initial_o = np.empty((self.rollout_batch_size, self.dims['o']), np.float32)  # observations
         self.initial_ag = np.empty((self.rollout_batch_size, self.dims['g']), np.float32)  # achieved goals
+        self.initial_obs = [None] * 10 #置き換え
+        self.initial_achieved_goal = [None] * 10
+        self.initial_desired_goal = [None] * 10
         self.reset_all_rollouts()
         self.clear_history()
         self.task_desired_goals = self.get_task_desired_goals_json()
@@ -154,12 +158,31 @@ class RolloutWorker:
         self.initial_o[i] = obs['observation']
         self.initial_ag[i] = obs['achieved_goal']
         self.g[i] = obs['desired_goal']
+    
+    # i番目の、環境変数を初期値に戻す
+    def reset_rollout2(self, task_id, episode_id):
+        """Resets the `i`-th rollout environment, re-samples a new goal, and updates the `initial_o`
+        and `g` arrays accordingly.
+        """
+        
+        # ここを環境の初期値
+        initial_obs, desired_goal, initial_achieved_goal = self.api.reset(task_id, episode_id)
+        self.initial_obs[task_id] = initial_obs
+        self.initial_desired_goal[task_id] = desired_goal
+        self.initial_achieved_goal[task_id] = initial_achieved_goal
+        
 
     def reset_all_rollouts(self):
         """Resets all `rollout_batch_size` rollout workers.
         """
         for i in range(self.rollout_batch_size):
             self.reset_rollout(i)
+    
+    def reset_all_rollouts2(self, episode_id):
+        """Resets all `rollout_batch_size` rollout workers.
+        """
+        for task_id in range(10):
+            self.reset_rollout2(task_id, episode_id)
 
     def generate_rollouts(self):
         """Performs `rollout_batch_size` rollouts in parallel for time horizon `T` with the current
@@ -171,13 +194,8 @@ class RolloutWorker:
         # 通信必要
         self.reset_all_rollouts()
         
-        # obs, task_id = 0, episode_id = 0
-        initial_obs, desired_goal, initial_achieved_goal = self.api.reset(task_id=0, episode_id=0)
-        print("initial_obs", "desired_goal", "initial_achieved_goal")
-        print(initial_obs, desired_goal, initial_achieved_goal)
-        
         # get base action
-        base_action = self.api.get_base_action(0, 0, initial_obs)
+        # base_action = self.api.get_base_action(0, 0, initial_obs)
 
         # compute observations
         o = np.empty((self.rollout_batch_size, self.dims['o']), np.float32)  # observations
@@ -287,7 +305,15 @@ class RolloutWorker:
         self.n_episodes += self.rollout_batch_size
 
         return convert_episode_to_batch_major(episode)
-
+    
+    def generate_rollouts2(self, episode_id):
+        """Performs `rollout_batch_size` rollouts in parallel for time horizon `T` with the current
+        policy acting on it accordingly.
+        rollout_batch_size分のエピソードを作成
+        """
+        
+        self.reset_all_rollouts2(episode_id)
+        
     def clear_history(self):
         """Clears all histories that are used for statistics
         """
