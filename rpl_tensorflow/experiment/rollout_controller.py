@@ -66,7 +66,8 @@ class EnvAPIClient:
         initial_obs = res_dict["initial_obs"]
         desired_goal = res_dict["desired_goal"]
         initial_achieved_goal = res_dict["initial_achieved_goal"]
-        return initial_obs, desired_goal, initial_achieved_goal
+        target_object = res_dict["target_object"]
+        return initial_obs, desired_goal, initial_achieved_goal, target_object
     
     def step(self, env_id, action):
         res = requests.post(f"{self.base_url}/step", json={
@@ -136,7 +137,8 @@ class RolloutWorker:
         self.initial_ag = np.empty((self.rollout_batch_size, self.dims['g']), np.float32)  # achieved goals
         self.initial_obs = [None] * 10 #置き換え
         self.initial_achieved_goal = [None] * 10
-        self.initial_desired_goal = [None] * 10
+        self.desired_goal = [None] * 10
+        self.target_object = [None] * 10
         self.reset_all_rollouts()
         self.clear_history()
         self.task_desired_goals = self.get_task_desired_goals_json()
@@ -166,10 +168,11 @@ class RolloutWorker:
         """
         
         # ここを環境の初期値
-        initial_obs, desired_goal, initial_achieved_goal = self.api.reset(task_id, episode_id)
+        initial_obs, desired_goal, initial_achieved_goal, target_object = self.api.reset(task_id, episode_id)
         self.initial_obs[task_id] = initial_obs
-        self.initial_desired_goal[task_id] = desired_goal
+        self.desired_goal[task_id] = desired_goal
         self.initial_achieved_goal[task_id] = initial_achieved_goal
+        self.target_object[task_id] = target_object
         
 
     def reset_all_rollouts(self):
@@ -190,7 +193,6 @@ class RolloutWorker:
         rollout_batch_size分のエピソードを作成
         """
         
-        # 環境の初期化で、initial_obs, initial_achived_goal, inital_desired_goalが初期化
         # 通信必要
         self.reset_all_rollouts()
         
@@ -312,7 +314,32 @@ class RolloutWorker:
         rollout_batch_size分のエピソードを作成
         """
         
+        max_step = 220
+        
         self.reset_all_rollouts2(episode_id)
+        
+        o = [None] * 10  # observations
+        ag = [None] * 10
+        
+        o[:] = [self.get_ddpg_obs(obs, target_object) for obs, target_object in zip(self.initial_obs, self.target_object)]
+        print("initial_obs????")
+        print(self.initial_obs[0].keys())
+        print(o[0])
+        ag[:] = self.initial_achieved_goal
+        obs, achieved_goals, acts, goals, successes, rewards = [], [], [], [], [], []
+        info_values = [np.empty((max_step, 10, self.dims['info_' + key]), np.float32) for key in self.info_keys]
+        Qs = []
+        
+        # # 1エピソードのタイムステップ
+        # for t in range(max_step):
+        #     print("timestep")
+        #     residual_action = self.ddpg_policy.get_delta_actions_and_Q(
+        #         o, ag, self.desired_goal,
+        #         compute_Q=self.compute_Q,
+        #         noise_eps=self.noise_eps if not self.exploit else 0.,
+        #         random_eps=self.random_eps if not self.exploit else 0.,
+        #         controller_prop=self.controller_prop if not self.exploit else 0.,
+        #         use_target_net=self.use_target_net)
         
     def clear_history(self):
         """Clears all histories that are used for statistics
@@ -353,3 +380,22 @@ class RolloutWorker:
         """
         for idx, env in enumerate(self.envs):
             env.seed(seed + 1000 * idx)
+    
+    def get_ddpg_obs(self, obs, target_object):
+        obs_list = []
+
+        # ロボット情報
+        obs_list.append(obs['robot0_joint_pos'])
+        obs_list.append(obs['robot0_joint_vel'])
+        obs_list.append(obs['robot0_eef_pos'])
+        obs_list.append(obs['robot0_eef_quat'])
+        obs_list.append(obs['robot0_gripper_qpos'])
+        obs_list.append(obs['robot0_gripper_qvel'])
+
+        obs_list.append(obs[target_object.replace("_main", "_pos")])
+        obs_list.append(obs[target_object.replace("_main", "_quat")])
+
+        # flattenして1次元ベクトルに
+        ddpg_obs = np.concatenate([x.flatten() for x in obs_list])
+        
+        return ddpg_obs
