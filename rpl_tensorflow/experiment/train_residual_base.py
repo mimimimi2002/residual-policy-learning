@@ -19,6 +19,7 @@ import pdb
 from subprocess import CalledProcessError
 from collections import OrderedDict
 from rollout_controller import RolloutWorker, GenerateConfig
+from rollout_controller_openvla import RolloutWorker_OpenVLA
 
 import numpy as np
 import tensorflow as tf
@@ -388,8 +389,9 @@ def launch_openvla(
     for name in ['T', 'rollout_batch_size', 'gamma', 'controller_prop','noise_eps', 'random_eps']:
         rollout_params[name] = params[name]
         eval_params[name] = params[name]
-
-    # rollout_worker = RolloutWorker(params['make_env'], ddpg_policy, dims, logger, cfg, **rollout_params)
+    
+    episode_id = 0
+    rollout_worker = RolloutWorker_OpenVLA(episode_id, ddpg_policy, dims, logger, cfg, **rollout_params)
     # rollout_worker.seed(rank_seed)
 
     # evaluator = RolloutWorker(params['make_env'], ddpg_policy, dims, logger, cfg, **eval_params)
