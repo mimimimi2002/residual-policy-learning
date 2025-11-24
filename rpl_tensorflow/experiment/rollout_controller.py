@@ -70,11 +70,19 @@ class EnvAPIClient:
         return initial_obs, desired_goal, initial_achieved_goal, target_object
     
     def step(self, env_id, action):
-        res = requests.post(f"{self.base_url}/step", json={
+        payload_dict = {
             "env_id": env_id,
             "action": action.tolist()
-        })
-        return res.json()
+        }
+        payload_bytes = pickle.dumps(payload_dict)
+        res = requests.post(f"{self.base_url}/step", data=payload_bytes)
+        res_dict = pickle.loads(res.content)
+
+        obs = res_dict["obs"]
+        reward = res_dict["reward"]
+        done = res_dict["done"]
+        info = res_dict["info"]
+        return obs, reward, done, info
 
     def set_init_state(self, env_id, init_state):
         res = requests.post(f"{self.base_url}/set_init_state", json={
@@ -322,24 +330,31 @@ class RolloutWorker:
         ag = [None] * 10
         
         o[:] = [self.get_ddpg_obs(obs, target_object) for obs, target_object in zip(self.initial_obs, self.target_object)]
-        print("initial_obs????")
-        print(self.initial_obs[0].keys())
-        print(o[0])
-        ag[:] = self.initial_achieved_goal
-        obs, achieved_goals, acts, goals, successes, rewards = [], [], [], [], [], []
-        info_values = [np.empty((max_step, 10, self.dims['info_' + key]), np.float32) for key in self.info_keys]
-        Qs = []
+        
+        # get base action
+        # base_action = self.api.get_base_action(0, 0, self.initial_obs[0])
+        
+        # step
+        # obs, reward, done, info = self.api.step(env_id=0, action=base_action)
+        
+        # ag[:] = self.initial_achieved_goal
+        # obs, achieved_goals, acts, goals, successes, rewards = [], [], [], [], [], []
+        # info_values = [np.empty((max_step, 10, self.dims['info_' + key]), np.float32) for key in self.info_keys]
+        # Qs = []
         
         # # 1エピソードのタイムステップ
         # for t in range(max_step):
         #     print("timestep")
-        #     residual_action = self.ddpg_policy.get_delta_actions_and_Q(
+        #     residual_action = self.ddpg_policy.get_delta_actions_and_Q2(
         #         o, ag, self.desired_goal,
         #         compute_Q=self.compute_Q,
         #         noise_eps=self.noise_eps if not self.exploit else 0.,
         #         random_eps=self.random_eps if not self.exploit else 0.,
         #         controller_prop=self.controller_prop if not self.exploit else 0.,
         #         use_target_net=self.use_target_net)
+
+        #     print("residual_action")
+        #     print(residual_action)
         
     def clear_history(self):
         """Clears all histories that are used for statistics
