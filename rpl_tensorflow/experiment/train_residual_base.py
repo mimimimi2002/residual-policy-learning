@@ -17,7 +17,7 @@ import tensorflow as tf
 import pdb
 from subprocess import CalledProcessError
 from collections import OrderedDict
-from rollout_controller import RolloutWorker
+from rollout_controller import RolloutWorker, GenerateConfig
 
 import numpy as np
 import tensorflow as tf
@@ -25,50 +25,6 @@ import tensorflow as tf
 from baselines.her.util import (
     import_function, store_args, flatten_grads, transitions_in_episode_batch)
 from baselines.common.mpi_adam import MpiAdam
-
-# for GenerateConfig
-from dataclasses import dataclass
-from typing import Optional, Union
-from pathlib import Path
-
-
-@dataclass
-class GenerateConfig:
-    # fmt: off
-
-    #################################################################################################################
-    # Model-specific parameters
-    #################################################################################################################
-    model_family: str = "openvla"                    # Model family
-    pretrained_checkpoint: Union[str, Path] = "openvla/openvla-7b"     # Pretrained checkpoint path
-    load_in_8bit: bool = False                       # (For OpenVLA only) Load with 8-bit quantization
-    load_in_4bit: bool = False                       # (For OpenVLA only) Load with 4-bit quantization
-
-    center_crop: bool = True                         # Center crop? (if trained w/ random crop image aug)
-
-    #################################################################################################################
-    # LIBERO environment-specific parameters
-    #################################################################################################################
-    task_suite_name: str = "libero_spatial"          # Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90
-    num_steps_wait: int = 10                         # Number of steps to wait for objects to stabilize in sim
-    num_trials_per_task: int = 50                    # Number of rollouts per task
-    libero_raw_data_dir: str = "/home/miki/LIBERO/libero_dataset/datasets/libero_spatial"
-
-    #################################################################################################################
-    # Utils
-    #################################################################################################################
-    run_id_note: Optional[str] = None                # Extra note to add in run ID for logging
-    local_log_dir: str = "./experiments/logs"        # Local directory for eval logs
-
-    use_wandb: bool = False                          # Whether to also log results in Weights & Biases
-    wandb_project: str = "YOUR_WANDB_PROJECT"        # Name of W&B project to log to (use default!)
-    wandb_entity: str = "YOUR_WANDB_ENTITY"          # Name of entity to log under
-
-    seed: int = 7                                    # Random Seed (for reproducibility)
-    
-    
-
-    # fmt: on
 
 
 def mpi_average(value):
@@ -175,8 +131,8 @@ def train(ddpg_policy, rollout_worker, evaluator,
             actor_losses = []
             rollout_worker.clear_history()
             
-            # 1エピソード分学習
-            for _ in range(n_cycles):
+            # n_cycle分のエピソード
+            for episode_id in range(n_cycles):
                 rollout_worker.random_eps = random_eps
                 rollout_worker.noise_eps = noise_eps
                 rollout_worker.controller_prop = controller_prop
@@ -188,6 +144,7 @@ def train(ddpg_policy, rollout_worker, evaluator,
                 
                 # Δaction + base actionを使ってシミュレーションしたエピソード
                 episode = rollout_worker.generate_rollouts()
+                rollout_worker.generate_rollouts2(episode_id)
                  
                 ddpg_policy.store_episode(episode)
                 for _ in range(n_batches):
@@ -241,7 +198,6 @@ def launch(
 ):  
     cfg = GenerateConfig()
     
-    print("cfg.model_family", cfg.model_family)
     # Fork for multi-CPU MPI implementation.
     if num_cpu > 1:
         try:
@@ -280,6 +236,8 @@ def launch(
     with open(os.path.join(logger.get_dir(), 'params.json'), 'w') as f:
         json.dump(params, f)
     params = config.prepare_params(params)
+    print("params")
+    print(params)
     config.log_params(params, logger=logger)
 
     if num_cpu == 1:
@@ -324,10 +282,10 @@ def launch(
         rollout_params[name] = params[name]
         eval_params[name] = params[name]
 
-    rollout_worker = RolloutWorker(params['make_env'], ddpg_policy, dims, logger, **rollout_params)
+    rollout_worker = RolloutWorker(params['make_env'], ddpg_policy, dims, logger, cfg, **rollout_params)
     rollout_worker.seed(rank_seed)
 
-    evaluator = RolloutWorker(params['make_env'], ddpg_policy, dims, logger, **eval_params)
+    evaluator = RolloutWorker(params['make_env'], ddpg_policy, dims, logger, cfg, **eval_params)
     evaluator.seed(rank_seed)
 
     kwargs = {}
