@@ -183,18 +183,26 @@ class RolloutWorker_OpenVLA:
         o = [None] * 10  # observations
         ag = [None] * 10
         
-        o[:] = [self.get_ddpg_obs(obs, target_object) for obs, target_object in zip(self.initial_obs, self.target_object)]
+        o[:] = [self.get_ddpg_obs(obs, target_object) for obs, target_object in zip(self.initial_full_obs, self.target_object)]
 
         # compute observations
         o = np.empty((self.rollout_batch_size, self.dims['o']), np.float32)  # observations
         ag = np.empty((self.rollout_batch_size, self.dims['g']), np.float32)  # achieved goals
         o[:] = self.initial_ddpg_obs
-        ag[:] = self.initial_ag
+        ag[:] = self.initial_achieved_goal
 
         # generate episodes
         # 1エピソードの各タイムステップ
         obs, achieved_goals, acts, goals, successes, rewards = [], [], [], [], [], []
         Qs = []
+        
+        residual_action = self.ddpg_policy.get_delta_actions_and_Q(
+                o, ag, self.desired_goal,
+                compute_Q=self.compute_Q,
+                noise_eps=self.noise_eps if not self.exploit else 0.,
+                random_eps=self.random_eps if not self.exploit else 0.,
+                controller_prop=self.controller_prop if not self.exploit else 0.,
+                use_target_net=self.use_target_net)
         
         # # タイムステップ
         # for t in range(self.T):

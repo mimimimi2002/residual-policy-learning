@@ -104,8 +104,6 @@ class DDPG_OpenVLA(object):
     def _preprocess_og(self, o, ag, g):
         if self.relative_goals:
             g_shape = g.shape
-            g = g.reshape(-1, self.dimg)
-            ag = ag.reshape(-1, self.dimg)
             g = self.subtract_goals(g, ag)
             g = g.reshape(*g_shape)
         o = np.clip(o, -self.clip_obs, self.clip_obs)
@@ -113,21 +111,26 @@ class DDPG_OpenVLA(object):
         return o, g
 
     # actorで出力されるΔaction
-    def get_delta_actions_and_Q(self, o, ag, g, noise_eps=0., random_eps=0., controller_prop=0.,use_target_net=False,
+    def get_delta_actions_and_Q(self, obs, achieved_goal, desired_goal, noise_eps=0., random_eps=0., controller_prop=0.,use_target_net=False,
                     compute_Q=False):
-        g_orig = g.copy()
-        o, g = self._preprocess_og(o, ag, g)
+        desired_goal_orig = desired_goal.copy()
+        obs, substract_goal = self._preprocess_og(obs, achieved_goal, desired_goal)
+        
         policy = self.target if use_target_net else self.main
         # values to compute
+        # output of Actor network
         vals = [policy.pi_tf]
-        #pdb.set_trace()
+        # #pdb.set_trace()
+        
+        # output of Critic network Q network
+        # combine it as list
         if compute_Q:
             vals += [policy.Q_pi_tf]
         # feed
         feed = {
-            policy.o_tf: o.reshape(-1, self.dimo),
-            policy.g_tf: g.reshape(-1, self.dimg),
-            policy.u_tf: np.zeros((o.size // self.dimo, self.dimu), dtype=np.float32)
+            policy.o_tf: obs.reshape(-1, self.dimo),
+            policy.g_tf: substract_goal.reshape(-1, self.dimg),
+            policy.u_tf: np.zeros((obs.size // self.dimo, self.dimu), dtype=np.float32)
         }
 
         ret = self.sess.run(vals, feed_dict=feed)
