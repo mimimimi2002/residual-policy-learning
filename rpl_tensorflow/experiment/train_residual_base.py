@@ -152,8 +152,8 @@ def train(ddpg_policy, rollout_worker, evaluator,
                 ddpg_policy.store_episode(episode)
                 for _ in range(n_batches):
                     critic_loss, actor_loss = ddpg_policy.train(base=base, residual=residual)
-                    losses.append(actor_loss)
-                    actor_losses.append(critic_loss)
+                    losses.append(critic_loss)
+                    actor_losses.append(actor_loss)
 
                 ddpg_policy.update_target_net()
 
@@ -246,12 +246,14 @@ def train2(ddpg_policy, rollout_worker, evaluator,
 
         # train
         if not skip_training:
+            max_success = 0.0
             losses = []
             actor_losses = []
             rollout_worker.clear_history()
             
             # n_cycle分のエピソード
-            for episode_id in range(n_cycles):
+            for episode_id in range(3):
+                print("episode", episode_id)
                 rollout_worker.random_eps = random_eps
                 rollout_worker.noise_eps = noise_eps
                 rollout_worker.controller_prop = controller_prop
@@ -262,53 +264,21 @@ def train2(ddpg_policy, rollout_worker, evaluator,
                         rollout_worker.noise_eps = 0.0
                 
                 # Δaction + base actionを使ってシミュレーションしたエピソード
-                # episode = rollout_worker.generate_rollouts()
-    #             rollout_worker.generate_rollouts2(episode_id)
+                episode = rollout_worker.generate_rollouts(episode_id)
                  
-    #             ddpg_policy.store_episode(episode)
-    #             for _ in range(n_batches):
-    #                 critic_loss, actor_loss = ddpg_policy.train(base=base, residual=residual)
-    #                 losses.append(actor_loss)
-    #                 actor_losses.append(critic_loss)
+                ddpg_policy.store_episode(episode)
+                for _ in range(n_batches):
+                    critic_loss, actor_loss = ddpg_policy.train(base=base, residual=residual)
+                    losses.append(actor_loss)
+                    actor_losses.append(critic_loss)
 
-    #             ddpg_policy.update_target_net()
+                ddpg_policy.update_target_net()
+            
+            current_success_rate = rollout_worker.current_success_rate()
+            if current_success_rate > max_success:
+                rollout_worker.save_policy(latest_policy_path)
+                max_success = current_success_rate
 
-    #     # test
-    #     evaluator.clear_history()
-    #     for _ in range(n_test_rollouts):
-    #         evaluator.generate_rollouts()
-
-    #     # record logs
-    #     logger.record_tabular('epoch', epoch)
-    #     for key, val in evaluator.logs('test'):
-    #         logger.record_tabular(key, mpi_average(val))
-    #     for key, val in rollout_worker.logs('train'):
-    #         logger.record_tabular(key, mpi_average(val))
-    #     for key, val in ddpg_policy.logs():
-    #         logger.record_tabular(key, mpi_average(val))
-
-    #     if rank == 0:
-    #         logger.dump_tabular()
-
-    #     # save the policy if it's better than the previous ones
-    #     # get success rate here
-    #     success_rate = mpi_average(evaluator.current_success_rate())
-    #     if rank == 0 and success_rate >= best_success_rate and save_policies:
-    #         best_success_rate = success_rate
-    #         logger.info('New best success rate: {}. Saving policy to {} ...'.format(best_success_rate, best_policy_path))
-    #         evaluator.save_policy(best_policy_path)
-    #         evaluator.save_policy(latest_policy_path)
-    #     if rank == 0 and policy_save_interval > 0 and epoch % policy_save_interval == 0 and save_policies:
-    #         policy_path = periodic_policy_path.format(epoch)
-    #         logger.info('Saving periodic policy to {} ...'.format(policy_path))
-    #         evaluator.save_policy(policy_path)
-
-    #     # make sure that different threads have different seeds
-    #     local_uniform = np.random.uniform(size=(1,))
-    #     root_uniform = local_uniform.copy()
-    #     MPI.COMM_WORLD.Bcast(root_uniform, root=0)
-    #     if rank != 0:
-    #         assert local_uniform[0] != root_uniform[0]
 
 def launch(
     env, logdir, n_epochs, num_cpu, seed, replay_strategy, policy_save_interval, clip_return, skip_training,

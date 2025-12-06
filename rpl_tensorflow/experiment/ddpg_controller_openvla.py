@@ -96,7 +96,7 @@ class DDPG_OpenVLA(object):
         buffer_shapes['ag'] = (self.T+1, self.dimg)
 
         buffer_size = (self.buffer_size // self.rollout_batch_size) * self.rollout_batch_size
-        self.buffer = ReplayBuffer(buffer_shapes, buffer_size, self.T, self.sample_transitions)
+        self.buffer = ReplayBuffer(buffer_shapes, buffer_size, 5, self.sample_transitions)
 
     def _random_action(self, n):
         return np.random.uniform(low=-self.max_u, high=self.max_u, size=(n, self.dimu))
@@ -190,10 +190,11 @@ class DDPG_OpenVLA(object):
 
     def _grads(self):
         # Avoid feed_dict here for performance!
+        self.actor_loss = -tf.reduce_mean(self.main.Q_pi_tf)
 
         critic_loss, actor_loss, Q_grad, pi_grad_r, pi_grad_b = self.sess.run([
             self.Q_loss_tf,
-            self.main.Q_pi_tf,
+            self.actor_loss,
             self.Q_grad_tf,
             self.pi_grad_tf_r,
             self.pi_grad_tf_b
@@ -389,3 +390,12 @@ class DDPG_OpenVLA(object):
         tf.variables_initializer(self._global_vars('')).run()
         self._sync_optimizers()
         self._init_target_net()
+    
+    def get_actor_weights(self):
+        weights = {
+            'main_r_pi': [w.eval(session=self.sess) for w in self._vars('main/r_pi')],
+            'main_b_pi': [w.eval(session=self.sess) for w in self._vars('main/b_pi')],
+            'target_r_pi': [w.eval(session=self.sess) for w in self._vars('target/r_pi')],
+            'target_b_pi': [w.eval(session=self.sess) for w in self._vars('target/b_pi')],
+        }
+        return weights

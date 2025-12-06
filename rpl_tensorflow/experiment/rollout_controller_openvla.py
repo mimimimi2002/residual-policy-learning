@@ -172,12 +172,13 @@ class RolloutWorker_OpenVLA:
         for task_id in range(10):
             self.reset_rollout(task_id, episode_id)
 
-    def generate_rollouts(self):
+    def generate_rollouts(self, episode_id):
         """Performs `rollout_batch_size` rollouts in parallel for time horizon `T` with the current
         policy acting on it accordingly.
         rollout_batch_size分のエピソードを作成
         """
-        
+        self.episode_id = episode_id
+        print("reset")
         self.reset_all_rollouts(self.episode_id)
         
         o = [None] * 10  # observations
@@ -196,111 +197,93 @@ class RolloutWorker_OpenVLA:
         obs, achieved_goals, acts, goals, successes, rewards = [], [], [], [], [], []
         Qs = []
         
-        residual_action = self.ddpg_policy.get_delta_actions_and_Q(
-                o, ag, self.desired_goal,
-                compute_Q=self.compute_Q,
-                noise_eps=self.noise_eps if not self.exploit else 0.,
-                random_eps=self.random_eps if not self.exploit else 0.,
-                controller_prop=self.controller_prop if not self.exploit else 0.,
-                use_target_net=self.use_target_net)
+        for t in range(5):
+            print("step", t)
+            # actorから得られたΔaction
+            residual_action = self.ddpg_policy.get_delta_actions_and_Q(
+                    o, ag, self.desired_goal,
+                    compute_Q=self.compute_Q,
+                    noise_eps=self.noise_eps if not self.exploit else 0.,
+                    random_eps=self.random_eps if not self.exploit else 0.,
+                    controller_prop=self.controller_prop if not self.exploit else 0.,
+                    use_target_net=self.use_target_net)
+
+            if self.compute_Q:
+                delta_u, Q = residual_action
+                Qs.append(Q)
+            else:
+                delta_u = residual_action
+
+            if delta_u.ndim == 1:
+                # The non-batched case should still have a reasonable shape.
+                delta_u = delta_u.reshape(1, -1)
+            
+            # 実際に環境とinteractionして
+            # 既存のopenvlaでbaseのactionを生成
+            # obsを更新
+            # 通信必要
+            base_u = []
+            for task_id in range(self.rollout_batch_size):
+                # episode_id = 0
+                base_action = self.api.get_base_action(task_id, 0, self.initial_full_obs[task_id])
+                base_u.append(base_action)
+
+            # --- 合成アクション ---
+            final_u = base_u + delta_u
+            final_u = np.clip(final_u, -self.ddpg_policy.max_u, self.ddpg_policy.max_u)
+
+            o_new = np.empty((self.rollout_batch_size, self.dims['o']))
+            ag_new = np.empty((self.rollout_batch_size, self.dims['g']))
+            success = np.zeros(self.rollout_batch_size)
+            reward = np.zeros(self.rollout_batch_size) # added by TS #finger を使え加えるか?
+            # # compute new states and observations
+            for task_id in range(self.rollout_batch_size):
+                target_object = self.target_object[task_id]
+                target_object_pos = target_object.replace("_main", "_pos")
+                target_object_quat = target_object.replace("_main", "_quat")
+                current_obs, _, done, info = self.api.step(task_id, final_u[task_id])
+                achieved_goal = np.concatenate([current_obs[target_object_pos], current_obs[target_object_quat]])
+                reward[task_id] = -np.linalg.norm(achieved_goal - self.desired_goal[task_id])
+                o_new[task_id] = self.get_ddpg_obs(current_obs, target_object)
+                ag_new[task_id] = achieved_goal
+                
+                # success
+                if done and success[task_id] == 0.0:
+                    success[task_id] = 1.0
+                    
+            
+            obs.append(o.copy())
+            achieved_goals.append(ag.copy())
+            rewards.append(reward.copy()) # added by TS
+            acts.append(final_u.copy())
+            goals.append(self.desired_goal.copy())
+            successes.append(success.copy())
+            o[...] = o_new
+            ag[...] = ag_new
+        obs.append(o.copy())
+        achieved_goals.append(ag.copy())
+        self.initial_ddpg_obs[:] = o
+
+        episode = dict(o=obs,
+                       u=acts,
+                       g=goals,
+                       ag=achieved_goals)
         
-        # # タイムステップ
-        # for t in range(self.T):
-        #     # actorから得られたΔaction
-        #     residual_action = self.ddpg_policy.get_delta_actions_and_Q(
-        #         o, ag, self.g,
-        #         compute_Q=self.compute_Q,
-        #         noise_eps=self.noise_eps if not self.exploit else 0.,
-        #         random_eps=self.random_eps if not self.exploit else 0.,
-        #         controller_prop=self.controller_prop if not self.exploit else 0.,
-        #         use_target_net=self.use_target_net)
-
-        #     if self.compute_Q:
-        #         delta_u, Q = residual_action
-        #         Qs.append(Q)
-        #     else:
-        #         delta_u = residual_action
-
-        #     if delta_u.ndim == 1:
-        #         # The non-batched case should still have a reasonable shape.
-        #         delta_u = delta_u.reshape(1, -1)
-
-        #     # 実際に環境とinteractionして
-        #     # 既存のopenvlaでbaseのactionを生成
-        #     # obsを更新
-        #     # 通信必要
-        #     base_u = []
-        #     # for i in range(self.rollout_batch_size):
-        #     #     with torch.no_grad():
-        #     #         obs_tensor = self._preprocess_for_openvla(o[i])  # 必要なら画像→テンソル変換
-        #     #         base_action = np.array([0.5, 0.5, 0.5, 0.5, 0.5, 0.5]) #self.openvla_policy.predict_action(obs_tensor)
-        #     #         base_u.append(base_action)
-
-        #     # --- 合成アクション ---
-        #     # final_u = base_u + delta_u
-        #     final_u = delta_u
-        #     final_u = np.clip(final_u, -self.ddpg_policy.max_u, self.ddpg_policy.max_u)
-
-        #     o_new = np.empty((self.rollout_batch_size, self.dims['o']))
-        #     ag_new = np.empty((self.rollout_batch_size, self.dims['g']))
-        #     success = np.zeros(self.rollout_batch_size)
-        #     reward = np.zeros(self.rollout_batch_size) # added by TS
-        #     # compute new states and observations
-        #     for i in range(self.rollout_batch_size):
-        #         try:
-        #             # We fully ignore the reward here because it will have to be re-computed
-        #             # for HER.
-        #             # obs, reward, done, info = env.step(action.tolist())
-        #             #　通信必要
-        #             curr_o_new, r, _, info = self.envs[i].step(final_u[i])
-        #             if 'is_success' in info:
-        #                 success[i] = info['is_success']
-        #             reward[i] = r # Added by TS
-        #             o_new[i] = curr_o_new['observation']
-        #             ag_new[i] = curr_o_new['achieved_goal']
-        #             for idx, key in enumerate(self.info_keys):
-        #                 info_values[idx][t, i] = info[key]
-        #             if self.render:
-        #                 self.envs[i].render()
-        #         except MujocoException as e:
-        #             return self.generate_rollouts()
-
-        #     if np.isnan(o_new).any():
-        #         self.logger.warning('NaN caught during rollout generation. Trying again...')
-        #         self.reset_all_rollouts()
-        #         return self.generate_rollouts()
-
-        #     obs.append(o.copy())
-        #     achieved_goals.append(ag.copy())
-        #     successes.append(success.copy())
-        #     rewards.append(reward.copy()) # added by TS
-        #     acts.append(final_u.copy())
-        #     goals.append(self.g.copy())
-        #     o[...] = o_new
-        #     ag[...] = ag_new
-        # obs.append(o.copy())
-        # achieved_goals.append(ag.copy())
-        # self.initial_o[:] = o
-
-        # episode = dict(o=obs,
-        #                u=acts,
-        #                g=goals,
-        #                ag=achieved_goals)
-        # for key, value in zip(self.info_keys, info_values):
-        #     episode['info_{}'.format(key)] = value
-
-        # # stats
-        # successful = np.array(successes)[-1, :]
-        # assert successful.shape == (self.rollout_batch_size,)
-        # success_rate = np.mean(successful)
-        # self.success_history.append(success_rate)
-        # self.returns_history.append(np.mean(np.sum(rewards, axis=0))) # added by TS
-        # if self.compute_Q:
-        #     self.Q_history.append(np.mean(Qs))
-        # self.n_episodes += self.rollout_batch_size
-
-        # return convert_episode_to_batch_major(episode)
+        # stats
+        successful = np.array(successes)[-1, :]
+        assert successful.shape == (self.rollout_batch_size,)
+        success_rate = np.mean(successful)
+        print("success_rate")
+        print(success_rate)
+        self.success_history.append(success_rate)
+        self.returns_history.append(np.mean(np.sum(rewards, axis=0))) # added by TS
+        if self.compute_Q:
+            self.Q_history.append(np.mean(Qs))
+        self.n_episodes += self.rollout_batch_size
         
+        return convert_episode_to_batch_major(episode)
+
+
     def clear_history(self):
         """Clears all histories that are used for statistics
         """
@@ -317,8 +300,9 @@ class RolloutWorker_OpenVLA:
     def save_policy(self, path):
         """Pickles the current policy for later inspection.
         """
+        actor_weights = self.ddpg_policy.get_actor_weights()
         with open(path, 'wb') as f:
-            pickle.dump(self.ddpg_policy, f)
+            pickle.dump(actor_weights, f)
 
     def logs(self, prefix='worker'):
         """Generates a dictionary that contains all collected statistics.
