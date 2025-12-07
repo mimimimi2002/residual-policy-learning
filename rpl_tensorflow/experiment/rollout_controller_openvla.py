@@ -108,7 +108,7 @@ class EnvAPIClient:
 class RolloutWorker_OpenVLA:
 
     @store_args
-    def __init__(self, episode_id, ddpg_policy, dims, logger, cfg: GenerateConfig, T, rollout_batch_size=1,
+    def __init__(self, ddpg_policy, dims, logger, cfg: GenerateConfig, T, rollout_batch_size=1,
                  exploit=False, use_target_net=False, compute_Q=False, noise_eps=0,
                  random_eps=0, controller_prop=0,history_len=100, render=False, **kwargs):
         """Rollout worker generates experience by interacting with one or many environments.
@@ -142,10 +142,8 @@ class RolloutWorker_OpenVLA:
         self.initial_achieved_goal = np.empty((self.rollout_batch_size, self.dims['g']), np.float32)  # achieved goals
         self.initial_full_obs = [None] * self.rollout_batch_size
         self.target_object = [None] * self.rollout_batch_size
-        self.reset_all_rollouts(episode_id)
         self.clear_history()
         self.task_desired_goals = self.get_task_desired_goals_json()
-        self.episode_id = episode_id
         
     def get_task_desired_goals_json(self):
         with open("/home/miki/residual-policy-learning/data/spatial_task_desired_goals.json", "r") as f:
@@ -177,9 +175,8 @@ class RolloutWorker_OpenVLA:
         policy acting on it accordingly.
         rollout_batch_size分のエピソードを作成
         """
-        self.episode_id = episode_id
         print("reset")
-        self.reset_all_rollouts(self.episode_id)
+        self.reset_all_rollouts(episode_id)
         
         o = [None] * 10  # observations
         ag = [None] * 10
@@ -197,8 +194,7 @@ class RolloutWorker_OpenVLA:
         obs, achieved_goals, acts, goals, successes, rewards = [], [], [], [], [], []
         Qs = []
         
-        for t in range(5):
-            print("step", t)
+        for t in range(self.T):
             # actorから得られたΔaction
             residual_action = self.ddpg_policy.get_delta_actions_and_Q(
                     o, ag, self.desired_goal,
@@ -224,8 +220,7 @@ class RolloutWorker_OpenVLA:
             # 通信必要
             base_u = []
             for task_id in range(self.rollout_batch_size):
-                # episode_id = 0
-                base_action = self.api.get_base_action(task_id, 0, self.initial_full_obs[task_id])
+                base_action = self.api.get_base_action(task_id, episode_id, self.initial_full_obs[task_id])
                 base_u.append(base_action)
 
             # --- 合成アクション ---
@@ -248,10 +243,10 @@ class RolloutWorker_OpenVLA:
                 ag_new[task_id] = achieved_goal
                 
                 # success
-                if done and success[task_id] == 0.0:
+                if done:
                     success[task_id] = 1.0
                     
-            
+            print("step", t, success)
             obs.append(o.copy())
             achieved_goals.append(ag.copy())
             rewards.append(reward.copy()) # added by TS

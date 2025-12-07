@@ -130,129 +130,14 @@ def train(ddpg_policy, rollout_worker, evaluator,
 
         # train
         if not skip_training:
-            losses = []
-            actor_losses = []
-            rollout_worker.clear_history()
-            
-            # n_cycle分のエピソード
-            for episode_id in range(n_cycles):
-                rollout_worker.random_eps = random_eps
-                rollout_worker.noise_eps = noise_eps
-                rollout_worker.controller_prop = controller_prop
-                if coin_flipping:
-                    deterministic_rollouts = np.random.random() < 0.5
-                    if deterministic_rollouts:
-                        rollout_worker.random_eps = 0.0
-                        rollout_worker.noise_eps = 0.0
-                
-                # Δaction + base actionを使ってシミュレーションしたエピソード
-                episode = rollout_worker.generate_rollouts()
-                rollout_worker.generate_rollouts2(episode_id)
-                 
-                ddpg_policy.store_episode(episode)
-                for _ in range(n_batches):
-                    critic_loss, actor_loss = ddpg_policy.train(base=base, residual=residual)
-                    losses.append(critic_loss)
-                    actor_losses.append(actor_loss)
-
-                ddpg_policy.update_target_net()
-
-        # test
-        evaluator.clear_history()
-        for _ in range(n_test_rollouts):
-            evaluator.generate_rollouts()
-
-        # record logs
-        logger.record_tabular('epoch', epoch)
-        for key, val in evaluator.logs('test'):
-            logger.record_tabular(key, mpi_average(val))
-        for key, val in rollout_worker.logs('train'):
-            logger.record_tabular(key, mpi_average(val))
-        for key, val in ddpg_policy.logs():
-            logger.record_tabular(key, mpi_average(val))
-
-        if rank == 0:
-            logger.dump_tabular()
-
-        # save the policy if it's better than the previous ones
-        # get success rate here
-        success_rate = mpi_average(evaluator.current_success_rate())
-        if rank == 0 and success_rate >= best_success_rate and save_policies:
-            best_success_rate = success_rate
-            logger.info('New best success rate: {}. Saving policy to {} ...'.format(best_success_rate, best_policy_path))
-            evaluator.save_policy(best_policy_path)
-            evaluator.save_policy(latest_policy_path)
-        if rank == 0 and policy_save_interval > 0 and epoch % policy_save_interval == 0 and save_policies:
-            policy_path = periodic_policy_path.format(epoch)
-            logger.info('Saving periodic policy to {} ...'.format(policy_path))
-            evaluator.save_policy(policy_path)
-
-        # make sure that different threads have different seeds
-        local_uniform = np.random.uniform(size=(1,))
-        root_uniform = local_uniform.copy()
-        MPI.COMM_WORLD.Bcast(root_uniform, root=0)
-        if rank != 0:
-            assert local_uniform[0] != root_uniform[0]
-
-def train2(ddpg_policy, rollout_worker, evaluator,
-          n_epochs, n_test_rollouts, n_cycles, n_batches, policy_save_interval,
-          save_policies, skip_training, freeze, full, **kwargs):
-    rank = MPI.COMM_WORLD.Get_rank()
-
-    latest_policy_path = os.path.join(logger.get_dir(), 'policy_latest.pkl')
-    best_policy_path = os.path.join(logger.get_dir(), 'policy_best.pkl')
-    periodic_policy_path = os.path.join(logger.get_dir(), 'policy_{}.pkl')
-
-    logger.info("Training...")
-    best_success_rate = -1
-    thresh = 0.7
-    prev_losses = [0.0]
-    losses = [0.0]
-    actor_losses = [0.0]
-    original_pi_lr_r = ddpg_policy.pi_lr_r
-    original_pi_lr_b = ddpg_policy.pi_lr_b
-
-    if freeze:
-        base = False
-        residual = True
-    elif full:
-        base = True
-        residual = True
-    else:
-        base = True
-        residual = False
-
-    random_eps = rollout_worker.random_eps
-    print(random_eps, rollout_worker.controller_prop)
-    noise_eps = rollout_worker.noise_eps
-    controller_prop = rollout_worker.controller_prop
-    coin_flipping = False
-
-    for epoch in range(n_epochs):
-        print(np.mean(losses), np.mean(prev_losses), np.mean(actor_losses))
-        if not kwargs['scratch'] and (epoch == 0 or abs(np.mean(losses) - np.mean(prev_losses)) > thresh or skip_training):
-            policy_pi_lr_r = 0.
-            policy_pi_lr_b = 0.
-            coin_flipping = True
-        else:
-            policy_pi_lr_r = original_pi_lr_r
-            policy_pi_lr_b = original_pi_lr_b
-            coin_flipping = False
-
-        broadcast_coinflip_residual(MPI.COMM_WORLD, rank, ddpg_policy, policy_pi_lr_r)
-        broadcast_coinflip_base(MPI.COMM_WORLD, rank, ddpg_policy, policy_pi_lr_b)
-
-        prev_losses = losses
-
-        # train
-        if not skip_training:
             max_success = 0.0
             losses = []
             actor_losses = []
             rollout_worker.clear_history()
             
             # n_cycle分のエピソード
-            for episode_id in range(3):
+            for episode_id in range(n_cycles):
+                
                 print("episode", episode_id)
                 rollout_worker.random_eps = random_eps
                 rollout_worker.noise_eps = noise_eps
@@ -276,118 +161,11 @@ def train2(ddpg_policy, rollout_worker, evaluator,
             
             current_success_rate = rollout_worker.current_success_rate()
             if current_success_rate > max_success:
-                rollout_worker.save_policy(latest_policy_path)
+                rollout_worker.save_policy(best_policy_path)
                 max_success = current_success_rate
 
 
 def launch(
-    env, logdir, n_epochs, num_cpu, seed, replay_strategy, policy_save_interval, clip_return, skip_training,
-    override_params={}, save_policies=True, policy_path=None
-):  
-    cfg = GenerateConfig()
-    
-    # Fork for multi-CPU MPI implementation.
-    if num_cpu > 1:
-        try:
-            whoami = mpi_fork(num_cpu, ['--bind-to', 'core'])
-        except CalledProcessError:
-            # fancy version of mpi call failed, try simple version
-            whoami = mpi_fork(num_cpu)
-
-        if whoami == 'parent':
-            sys.exit(0)
-        import baselines.common.tf_util as U
-        U.single_threaded_session().__enter__()
-    rank = MPI.COMM_WORLD.Get_rank()
-
-    # Configure logging
-    if rank == 0:
-        if logdir or logger.get_dir() is None:
-            logger.configure(dir=logdir)
-    else:
-        logger.configure()
-    logdir = logger.get_dir()
-    assert logdir is not None
-    os.makedirs(logdir, exist_ok=True)
-
-    # Seed everything.
-    rank_seed = seed + 1000000 * rank
-    set_global_seeds(rank_seed)
-
-    # Prepare params.
-    params = config.DEFAULT_PARAMS
-    params['env_name'] = env
-    params['replay_strategy'] = replay_strategy
-    if env in config.DEFAULT_ENV_PARAMS:
-        params.update(config.DEFAULT_ENV_PARAMS[env])  # merge env-specific parameters in
-    params.update(**override_params)  # makes it possible to override any parameter
-    with open(os.path.join(logger.get_dir(), 'params.json'), 'w') as f:
-        json.dump(params, f)
-    params = config.prepare_params(params)
-    config.log_params(params, logger=logger)
-
-    if num_cpu == 1:
-        logger.warn()
-        logger.warn('*** Warning ***')
-        logger.warn(
-            'You are running HER with just a single MPI worker. This will work, but the ' +
-            'experiments that we report in Plappert et al. (2018, https://arxiv.org/abs/1802.09464) ' +
-            'were obtained with --num_cpu 19. This makes a significant difference and if you ' +
-            'are looking to reproduce those results, be aware of this. Please also refer to ' +
-            'https://github.com/openai/baselines/issues/314 for further details.')
-        logger.warn('****************')
-        logger.warn()
-
-    dims = config.configure_dims(params)
-    freeze=False
-    full=True
-    #
-    if policy_path is None:
-        ddpg_policy = config.configure_ddpg(dims=dims, params=params, clip_return=clip_return)
-    if policy_path is not None:
-        her_transits = config.get_her_transitions(dims=dims, params=params, clip_return=clip_return)
-        ddpg_policy = load_policy(policy_path, her_transits, freeze=freeze, full=full)
-
-    rollout_params = {
-        'exploit': False,
-        'use_target_net': False,
-        'use_demo_states': True,
-        'compute_Q': False,
-        'T': params['T'],
-    }
-
-    eval_params = {
-        'exploit': True,
-        'use_target_net': params['test_with_polyak'],
-        'use_demo_states': False,
-        'compute_Q': True,
-        'T': params['T'],
-    }
-
-    for name in ['T', 'rollout_batch_size', 'gamma', 'controller_prop','noise_eps', 'random_eps']:
-        rollout_params[name] = params[name]
-        eval_params[name] = params[name]
-
-    rollout_worker = RolloutWorker(params['make_env'], ddpg_policy, dims, logger, cfg, **rollout_params)
-    rollout_worker.seed(rank_seed)
-
-    evaluator = RolloutWorker(params['make_env'], ddpg_policy, dims, logger, cfg, **eval_params)
-    evaluator.seed(rank_seed)
-
-    kwargs = {}
-    if 'Residual' not in env:
-        kwargs['scratch'] = True
-    else:
-        kwargs['scratch'] = False
-
-    train(
-        logdir=logdir, ddpg_policy=ddpg_policy, rollout_worker=rollout_worker,
-        evaluator=evaluator, n_epochs=n_epochs, n_test_rollouts=params['n_test_rollouts'],
-        n_cycles=params['n_cycles'], n_batches=params['n_batches'],
-        policy_save_interval=policy_save_interval, save_policies=save_policies, skip_training=skip_training, 
-        freeze=freeze, full=full, **kwargs)
-    
-def launch_openvla(
     env, logdir, n_epochs, num_cpu, seed, replay_strategy, policy_save_interval, clip_return, skip_training,
     override_params={}, save_policies=True, policy_path=None
 ):  
@@ -475,10 +253,9 @@ def launch_openvla(
         rollout_params[name] = params[name]
         eval_params[name] = params[name]
     
-    episode_id = 0
-    rollout_worker = RolloutWorker_OpenVLA(episode_id, ddpg_policy, dims, logger, cfg, **rollout_params)
+    rollout_worker = RolloutWorker_OpenVLA(ddpg_policy, dims, logger, cfg, **rollout_params)
 
-    evaluator = RolloutWorker_OpenVLA(episode_id, ddpg_policy, dims, logger, cfg, **eval_params)
+    evaluator = RolloutWorker_OpenVLA(ddpg_policy, dims, logger, cfg, **eval_params)
 
     kwargs = {}
     if 'Residual' not in env:
@@ -486,7 +263,7 @@ def launch_openvla(
     else:
         kwargs['scratch'] = False
 
-    train2(
+    train(
         logdir=logdir, ddpg_policy=ddpg_policy, rollout_worker=rollout_worker,
         evaluator=evaluator, n_epochs=n_epochs, n_test_rollouts=params['n_test_rollouts'],
         n_cycles=params['n_cycles'], n_batches=params['n_batches'],
@@ -506,7 +283,7 @@ def launch_openvla(
 @click.option('--skip_training', is_flag=True, help='whether or not training should be skipped')
 @click.option('--policy_path', type=str, default=None, help='path to saved policy')
 def main(**kwargs):
-    launch_openvla(**kwargs)
+    launch(**kwargs)
 
 
 if __name__ == '__main__':
